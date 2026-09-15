@@ -5768,10 +5768,13 @@ function genererPasseJoueur(id){
   const connue = ARRIVEES_CONNUES[nom];
   const clubActuel = info.team;
 
-  // parcours : un club sur deux environ n'a connu que son club actuel
+  // parcours : un club sur deux environ n'a connu que son club actuel — sauf pour un
+  // joueur déjà documenté (ARRIVEES_CONNUES), dont l'histoire ne doit pas être laissée au
+  // hasard. Sans ce garde-fou, un joueur connu comme "à Outre Maire depuis ses débuts"
+  // se voyait quand même inventer deux ou trois clubs imaginaires avant d'y arriver.
   const nbSaisons = 2025 - premiere + 1;
   const autres = TEAMS.filter(t=>t !== clubActuel);
-  const nbClubs = nbSaisons <= 2 ? 1 : (rnd() < 0.5 ? 1 : (rnd() < 0.85 ? 2 : 3));
+  const nbClubs = connue ? 1 : (nbSaisons <= 2 ? 1 : (rnd() < 0.5 ? 1 : (rnd() < 0.85 ? 2 : 3)));
   const parcours = [];
   for(let i=0; i<nbClubs-1; i++) parcours.push(autres[Math.floor(rnd() * autres.length)]);
   parcours.push(clubActuel);
@@ -5818,6 +5821,23 @@ function genererPasseJoueur(id){
       });
     }
   });
+
+  // Un joueur documenté dont la toute première mention connue diffère de son club actuel
+  // a changé de club en cours de route (ex. Hugo, arrivé à Outre Maire puis transféré à
+  // ASE) : toutes les saisons antérieures à cette première mention héritent de ce club
+  // d'origine plutôt que du club actuel, qui ne représente alors que son dernier point de
+  // chute et non le début de sa carrière.
+  if(connue && connue.clubs && Object.keys(connue.clubs).length){
+    const annees = Object.keys(connue.clubs).map(Number).sort((a,b)=>a-b);
+    const premiereAnnee = annees[0], clubOrigine = connue.clubs[premiereAnnee];
+    // ne compte comme "club d'origine" que s'il couvre au moins deux saisons documentées :
+    // une seule année isolée (comme Mixte, prêté un an ailleurs) est une exception, pas le
+    // point de départ d'une carrière entière.
+    const anneesAvecCeClub = annees.filter(a=>connue.clubs[a] === clubOrigine).length;
+    if(clubOrigine !== clubActuel && anneesAvecCeClub >= 2){
+      lignes.forEach(l=>{ if(l.saison < premiereAnnee) l.club = clubOrigine; });
+    }
+  }
 
   // Le palmarès saisi fait autorité dans les deux sens : il ajoute les titres connus et
   // retire ceux que le club a gagnés sans ce joueur.
@@ -5875,6 +5895,10 @@ function genererToutesLesCarrieres(){
   let joueurs = 0, saisons = 0;
   const clubs = [...TEAMS, ...(d2State ? d2State.teams : [])];
   clubs.forEach(team=>rosterOf(team).forEach(p=>{
+    // un joueur déjà documenté à la main ("Notes libres") a un passé réel et volontaire —
+    // on ne lui invente jamais une carrière fictive par-dessus, même si aucune ligne n'a
+    // encore été générée automatiquement pour lui.
+    if((playerCareers[p.id] || []).length) return;
     const existant = careerHistory[p.id] || [];
     // on ne touche jamais aux saisons déjà jouées dans l'application
     if(existant.some(l=>l.genere)) return;
