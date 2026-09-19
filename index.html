@@ -2084,6 +2084,8 @@ function renderMatches(){
   container.querySelectorAll('.add-card-btn').forEach(el=>el.addEventListener('click', onAddCard));
   container.querySelectorAll('.random-card-btn').forEach(el=>el.addEventListener('click', onRandomCard));
   container.querySelectorAll('.remove-card').forEach(el=>el.addEventListener('click', onRemoveCard));
+  container.querySelectorAll('.add-blessure-btn').forEach(el=>el.addEventListener('click', onAddBlessureManuelle));
+  container.querySelectorAll('.remove-blessure').forEach(el=>el.addEventListener('click', onRemoveBlessureManuelle));
   container.querySelectorAll('.mvp-select').forEach(el=>el.addEventListener('change', onMvpChange));
   container.querySelectorAll('.detail-btn').forEach(el=>el.addEventListener('click', (e)=>{
     e.stopPropagation();
@@ -2635,6 +2637,39 @@ function renderTeamStatsBlock(idx, side, teamName){
       ${renderTeamPanel(idx, side, teamName, 'goals', '⚽ Buts')}
       <div class="team-stat-sub">${renderTeamPanel(idx, side, teamName, 'assists', '🎯 Passes décisives')}</div>
       <div class="team-stat-sub">${renderCardsPanel(idx, side, teamName)}</div>
+      <div class="team-stat-sub">${renderBlessuresPanel(idx, side, teamName)}</div>
+    </div>`;
+}
+
+// Panneau de saisie manuelle d'une blessure : contrairement au risque aléatoire (silencieux
+// en simulation, ou posé en question pendant une saisie manuelle de score), ici c'est un choix
+// explicite — pas de tirage, pas de confirmation, la blessure s'applique directement.
+function renderBlessuresPanel(idx, side, teamName){
+  const roster = rosterOf(teamName);
+  const options = roster.map(p=>{
+    const dejaBlesse = estBlesse(p.id);
+    return `<option value="${p.id}" ${dejaBlesse?'disabled style="color:var(--muted); font-style:italic;"':''}>${p.star?'⭐ ':''}${getPlayerName(p.id)} (${POS_LABELS[p.pos]||p.pos})${dejaBlesse?` — déjà blessé (${blessures[p.id].matchsRestants} m.)`:''}</option>`;
+  }).join('');
+  const typeOptions = TYPES_BLESSURE.map((t,i)=>`<option value="${i}">${t.icone} ${t.type} (${t.duree[0]}-${t.duree[1]} m.)</option>`).join('');
+  const actives = roster.filter(p=>estBlesse(p.id));
+  const chips = actives.map(p=>`
+    <span class="stat-chip warn">
+      ${blessures[p.id].icone} ${getPlayerName(p.id)} <b style="color:var(--loss); font-size:10px;">(${blessures[p.id].matchsRestants} m.)</b>
+      <button class="remove-blessure chip-x" data-id="${p.id}">×</button>
+    </span>`).join('');
+  return `
+    <div>
+      <label style="display:block; font-size:10.5px; color:var(--muted); text-transform:uppercase; letter-spacing:0.6px; margin-bottom:6px; font-weight:600;">🤕 Blessures</label>
+      <div class="team-stat-row">
+        <select class="blessure-player-select" id="sel-blessure-player-${side}-${idx}">
+          ${options}
+        </select>
+        <select class="blessure-type-select" id="sel-blessure-type-${side}-${idx}" style="max-width:150px;">
+          ${typeOptions}
+        </select>
+        <button class="add-blessure-btn ghost-btn" data-idx="${idx}" data-side="${side}" data-team="${teamName}" style="padding:7px 10px;">Ajouter</button>
+      </div>
+      <div style="margin-top:8px;">${chips}</div>
     </div>`;
 }
 
@@ -2940,6 +2975,28 @@ function onRemoveNote(e){
   autoSave();
 }
 
+function onAddBlessureManuelle(e){
+  const btn = e.currentTarget;
+  const { idx, side, team } = btn.dataset;
+  const selJoueur = document.getElementById(`sel-blessure-player-${side}-${idx}`);
+  const selType = document.getElementById(`sel-blessure-type-${side}-${idx}`);
+  if(!selJoueur || !selJoueur.value) return;
+  const type = TYPES_BLESSURE[parseInt(selType.value)];
+  const duree = enregistrerBlessure(selJoueur.value, type);
+  renderMatches();
+  computeAll();
+  autoSave();
+  showToast(`${type.icone} ${getPlayerName(selJoueur.value)} blessé — ${type.type.toLowerCase()}, indisponible ${duree} match${duree>1?'s':''}`);
+}
+
+function onRemoveBlessureManuelle(e){
+  const id = e.currentTarget.dataset.id;
+  if(blessures[id]) blessures[id].matchsRestants = 0;
+  renderMatches();
+  computeAll();
+  autoSave();
+}
+
 function onAddCard(e){
   const btn = e.currentTarget;
   const { idx, side, type, compet } = btn.dataset;
@@ -2961,19 +3018,13 @@ function onRandomCard(e){
   const btn = e.currentTarget;
   const { idx, side, team } = btn.dataset;
   const arb = arbitreDuMatch(state[idx], idx, 'championnat');
-  // à sévérité neutre (1.0) : ~53% rien, ~45% jaune, ~2% rouge — le jaune ne compte pas
-  // dans les stats donc autant qu'il tombe souvent ; le rouge reste un évènement rare
-  const pRouge = Math.min(0.05, 0.02 * arb.severite);
-  const pJaune = Math.min(0.65, 0.45 * arb.severite);
-  const r = Math.random();
-  let type = null;
-  if(r < pRouge) type = 'rouge';
-  else if(r < pRouge + pJaune) type = 'jaune';
+  // en saisie manuelle, cliquer sur le dé est déjà la décision de sanctionner : on ne
+  // tire donc plus l'issue "rien ne se passe", seulement la couleur du carton — la
+  // sévérité de l'arbitre reste ce qui penche la balance entre jaune et rouge
+  const pRougeBrut = Math.min(0.05, 0.02 * arb.severite);
+  const pJauneBrut = Math.min(0.65, 0.45 * arb.severite);
+  const type = Math.random() < (pRougeBrut / (pRougeBrut + pJauneBrut)) ? 'rouge' : 'jaune';
 
-  if(!type){
-    showToast(`🎲 ${arb.nom} laisse jouer — rien à signaler`);
-    return;
-  }
   const id = tirerJoueurPourCarton(team);
   if(!id){ showToast("Personne à sanctionner, effectif au complet suspendu"); return; }
   ajouterCarton(state[idx], side, id, type, idx, 'championnat');
